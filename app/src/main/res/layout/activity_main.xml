@@ -76,6 +76,14 @@
             android:text="Capture Code"
             android:layout_marginTop="8dp"/>
 
+        <!-- New button to pick from gallery -->
+        <Button
+            android:id="@+id/buttonSelectFromGallery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Select from Gallery"
+            android:layout_marginTop="8dp"/>
+
         <ImageView
             android:id="@+id/imageViewCaptured"
             android:layout_width="match_parent"

@@ -3,10 +3,15 @@ package com.example.qrcodevariant;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.media.ExifInterface;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.View;
@@ -23,18 +28,22 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.IOException;
+import java.io.InputStream;
+
 public class MainActivity extends AppCompatActivity {
 
     private static final int CAMERA_REQUEST_CODE = 100;
     private static final int CAMERA_PERMISSION_CODE = 101;
+    private static final int GALLERY_REQUEST_CODE = 200;
 
     private EditText editTextBinary;
     private Spinner spinnerGridSizeEncode, spinnerGridSizeDecode;
-    private Button buttonGenerate, buttonCapture;
+    private Button buttonGenerate, buttonCapture, buttonSelectFromGallery;
     private ImageView imageViewCode, imageViewCaptured;
     private TextView textViewDecoded;
 
-    private int blockSize = 100; // Define blocksize
+    private int blockSize = 100; // Define block size (adjust as needed)
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,19 +56,18 @@ public class MainActivity extends AppCompatActivity {
         spinnerGridSizeDecode = findViewById(R.id.spinnerGridSizeDecode);
         buttonGenerate = findViewById(R.id.buttonGenerate);
         buttonCapture = findViewById(R.id.buttonCapture);
+        buttonSelectFromGallery = findViewById(R.id.buttonSelectFromGallery);
         imageViewCode = findViewById(R.id.imageViewCode);
         imageViewCaptured = findViewById(R.id.imageViewCaptured);
         textViewDecoded = findViewById(R.id.textViewDecoded);
 
-        // Setup spinner with grid sizes (values from res/values/strings.xml)
+        // Setup spinner with grid sizes from res/values/strings.xml
         ArrayAdapter<CharSequence> adapter = ArrayAdapter.createFromResource(
                 this,
                 R.array.grid_sizes,
                 android.R.layout.simple_spinner_item
         );
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-
-        // Assign the same adapter to both spinners
         spinnerGridSizeEncode.setAdapter(adapter);
         spinnerGridSizeDecode.setAdapter(adapter);
 
@@ -85,7 +93,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Handle Capture Code button click (Decoding)
+        // Handle Capture Code button click (Decoding from Camera)
         buttonCapture.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -104,19 +112,32 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         });
+
+        // Handle Select from Gallery button click (Decoding from Gallery)
+        buttonSelectFromGallery.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                openGallery();
+            }
+        });
     }
 
-    // Opens the camera using an intent
-    // In your openCamera method
+    // Opens the camera using an intent (returns a thumbnail)
     private void openCamera() {
         Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        // Request high resolution image
         if (cameraIntent.resolveActivity(getPackageManager()) != null) {
             startActivityForResult(cameraIntent, CAMERA_REQUEST_CODE);
         }
     }
 
-    // Handle permission result for the camera
+    // Opens the gallery for the user to pick an image
+    private void openGallery() {
+        Intent galleryIntent = new Intent(Intent.ACTION_PICK,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        startActivityForResult(galleryIntent, GALLERY_REQUEST_CODE);
+    }
+
+    // Handle camera permission result
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
@@ -124,38 +145,175 @@ public class MainActivity extends AppCompatActivity {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 openCamera();
             } else {
-                Toast.makeText(
-                        this,
-                        "Camera permission is required to capture image",
-                        Toast.LENGTH_SHORT
-                ).show();
+                Toast.makeText(this, "Camera permission is required to capture image", Toast.LENGTH_SHORT).show();
             }
         }
     }
 
-    // Process the captured image from the camera
+    // Process the captured or selected image
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == CAMERA_REQUEST_CODE && resultCode == RESULT_OK) {
+        // If the user captured a photo with the camera
+        if (requestCode == CAMERA_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
             Bundle extras = data.getExtras();
             Bitmap capturedImage = (Bitmap) extras.get("data");
-            imageViewCaptured.setImageBitmap(capturedImage);
+            if (capturedImage != null) {
+                imageViewCaptured.setImageBitmap(capturedImage);
 
-            // Use the user-selected grid size for DECODING
-            int gridSize = Integer.parseInt(spinnerGridSizeDecode.getSelectedItem().toString());
-            String decodedBinary = decodeQRCodeVariant(capturedImage, gridSize);
-            textViewDecoded.setText("Decoded Binary: " + decodedBinary);
+                int gridSize = Integer.parseInt(spinnerGridSizeDecode.getSelectedItem().toString());
+                String decodedBinary = decodeQRCodeVariant(capturedImage, gridSize);
+                textViewDecoded.setText("Decoded Binary: " + decodedBinary);
+            }
+        }
+        // If the user selected an image from the gallery
+        else if (requestCode == GALLERY_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
+            Uri selectedImageUri = data.getData();
+            if (selectedImageUri != null) {
+                try {
+                    // Load and rotate the image if needed
+                    Bitmap selectedImage = handleSamplingAndRotationBitmap(selectedImageUri);
+                    imageViewCaptured.setImageBitmap(selectedImage);
+
+                    int gridSize = Integer.parseInt(spinnerGridSizeDecode.getSelectedItem().toString());
+                    String decodedBinary = decodeQRCodeVariant(selectedImage, gridSize);
+                    textViewDecoded.setText("Decoded Binary: " + decodedBinary);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    Toast.makeText(this, "Failed to load image.", Toast.LENGTH_SHORT).show();
+                }
+            }
         }
     }
 
-    // Generates the QR code variant bitmap from the binary string and grid size
+    /**
+     * This method handles the image rotation and sampling to avoid out of memory issues
+     * @param selectedImage The URI of the selected image
+     * @return A rotated bitmap based on EXIF data
+     */
+    public Bitmap handleSamplingAndRotationBitmap(Uri selectedImage) throws IOException {
+        int MAX_HEIGHT = 1024;
+        int MAX_WIDTH = 1024;
+
+        // First decode with inJustDecodeBounds=true to check dimensions
+        final BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        InputStream imageStream = getContentResolver().openInputStream(selectedImage);
+        BitmapFactory.decodeStream(imageStream, null, options);
+        imageStream.close();
+
+        // Calculate inSampleSize
+        options.inSampleSize = calculateInSampleSize(options, MAX_WIDTH, MAX_HEIGHT);
+
+        // Decode bitmap with inSampleSize set
+        options.inJustDecodeBounds = false;
+        imageStream = getContentResolver().openInputStream(selectedImage);
+        Bitmap img = BitmapFactory.decodeStream(imageStream, null, options);
+        imageStream.close();
+
+        // Rotate the image if needed
+        return rotateImageIfRequired(img, selectedImage);
+    }
+
+    /**
+     * Calculate an inSampleSize for use in a BitmapFactory.Options object when decoding
+     * bitmaps using the decode* methods from BitmapFactory. This implementation calculates
+     * the closest inSampleSize that will result in the final decoded bitmap having a width and
+     * height equal to or larger than the requested width and height.
+     */
+    public static int calculateInSampleSize(BitmapFactory.Options options, int reqWidth, int reqHeight) {
+        // Raw height and width of image
+        final int height = options.outHeight;
+        final int width = options.outWidth;
+        int inSampleSize = 1;
+
+        if (height > reqHeight || width > reqWidth) {
+            // Calculate ratios of height and width to requested height and width
+            final int heightRatio = Math.round((float) height / (float) reqHeight);
+            final int widthRatio = Math.round((float) width / (float) reqWidth);
+
+            // Choose the smallest ratio as inSampleSize value, this will guarantee a final image
+            // with both dimensions larger than or equal to the requested height and width.
+            inSampleSize = heightRatio < widthRatio ? heightRatio : widthRatio;
+
+            // This offers some additional logic in case the image has a strange
+            // aspect ratio. For example, a panorama may have a much larger
+            // width than height. In these cases the total pixels might still
+            // end up being too large to fit comfortably in memory, so we should
+            // be more aggressive with sample down the image (=larger inSampleSize).
+            final float totalPixels = width * height;
+
+            // Anything more than 2x the requested pixels we'll sample down further
+            final float totalReqPixelsCap = reqWidth * reqHeight * 2;
+
+            while (totalPixels / (inSampleSize * inSampleSize) > totalReqPixelsCap) {
+                inSampleSize++;
+            }
+        }
+        return inSampleSize;
+    }
+
+    /**
+     * Rotate an image if required.
+     * @param img The image bitmap
+     * @param selectedImage Image URI
+     * @return The resulted Bitmap after handling rotation
+     */
+    private Bitmap rotateImageIfRequired(Bitmap img, Uri selectedImage) throws IOException {
+        String[] projection = {MediaStore.Images.Media.DATA};
+        Cursor cursor = getContentResolver().query(selectedImage, projection, null, null, null);
+
+        if (cursor == null) {
+            ExifInterface ei = new ExifInterface(getContentResolver().openInputStream(selectedImage));
+            int orientation = ei.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED);
+            return rotateImage(img, getRotationFromOrientation(orientation));
+        } else {
+            int column_index = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA);
+            cursor.moveToFirst();
+            String path = cursor.getString(column_index);
+            cursor.close();
+
+            ExifInterface ei = new ExifInterface(path);
+            int orientation = ei.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED);
+            return rotateImage(img, getRotationFromOrientation(orientation));
+        }
+    }
+
+    /**
+     * Get rotation in degrees from EXIF orientation constant
+     */
+    private static int getRotationFromOrientation(int orientation) {
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                return 90;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                return 180;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                return 270;
+            default:
+                return 0;
+        }
+    }
+
+    /**
+     * Rotate the given bitmap with specified degrees
+     */
+    private static Bitmap rotateImage(Bitmap img, int degree) {
+        if (degree == 0) return img;
+
+        Matrix matrix = new Matrix();
+        matrix.postRotate(degree);
+        Bitmap rotatedImg = Bitmap.createBitmap(img, 0, 0, img.getWidth(), img.getHeight(), matrix, true);
+        img.recycle();
+        return rotatedImg;
+    }
+
+    // Generates the QR code variant bitmap with visible grid lines from the binary string and grid size
     private Bitmap generateQRCodeVariant(String binary, int gridSize) {
         int width = gridSize * blockSize;
         int height = gridSize * blockSize;
 
-        // Create a blank bitmap and canvas
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         Paint paint = new Paint();
@@ -180,76 +338,59 @@ public class MainActivity extends AppCompatActivity {
                 if (index < binary.length()) {
                     char bit = binary.charAt(index);
                     paint.setColor(bit == '1' ? Color.BLACK : Color.WHITE);
-                    canvas.drawRect(
-                            col * blockSize,
-                            row * blockSize,
-                            (col + 1) * blockSize,
-                            (row + 1) * blockSize,
-                            paint
-                    );
+                    canvas.drawRect(col * blockSize, row * blockSize,
+                            (col + 1) * blockSize, (row + 1) * blockSize, paint);
                     index++;
                 }
             }
         }
 
-        // 4) Draw the grid lines on top to make boundaries clear
+        // 4) Draw grid lines for clear block boundaries
         paint.setColor(Color.BLACK);
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(3); // Adjust thickness if needed
-
-        // Horizontal lines
+        paint.setStrokeWidth(3);
         for (int i = 0; i <= gridSize; i++) {
             int y = i * blockSize;
             canvas.drawLine(0, y, width, y, paint);
         }
-        // Vertical lines
         for (int i = 0; i <= gridSize; i++) {
             int x = i * blockSize;
             canvas.drawLine(x, 0, x, height, paint);
         }
-
-        // Reset style (optional if you do more drawing later)
         paint.setStyle(Paint.Style.FILL);
 
         return bitmap;
     }
 
-
-
-    // Decodes the QR code variant using the provided grid size by reading the central region
+    // Decodes the QR code variant by reading the central region of the bitmap using the provided grid size
     private String decodeQRCodeVariant(Bitmap bitmap, int gridSize) {
         if (bitmap == null || bitmap.getWidth() == 0 || bitmap.getHeight() == 0) {
             return "No image to decode.";
         }
 
-        // Compute the block dimensions based on the captured bitmap
         int blockWidth = bitmap.getWidth() / gridSize;
         int blockHeight = bitmap.getHeight() / gridSize;
         StringBuilder binaryResult = new StringBuilder();
 
-        // Process only the central area (excluding the border row & column)
+        // Process only the central area (excluding the border row/column)
         for (int row = 1; row < gridSize - 1; row++) {
             for (int col = 1; col < gridSize - 1; col++) {
                 int startX = col * blockWidth;
                 int startY = row * blockHeight;
-
-                // We'll sample the center of each block to avoid the grid lines
-                binaryResult.append(
-                        getBlockValue(bitmap, startX, startY, blockWidth, blockHeight)
-                );
+                binaryResult.append(getBlockValue(bitmap, startX, startY, blockWidth, blockHeight));
             }
         }
         return binaryResult.toString();
     }
 
     /**
-     * Samples the center region of a block to decide if it's mostly black (1) or white (0).
+     * Samples the center region of a block to determine whether it's mostly black (returns '1')
+     * or white (returns '0'), skipping the outer edges where grid lines may be drawn.
      */
     private char getBlockValue(Bitmap bitmap, int startX, int startY, int blockWidth, int blockHeight) {
         int blackCount = 0;
         int whiteCount = 0;
 
-        // 20% padding helps skip the grid lines drawn at the edges
         int innerPadding = (int) (Math.min(blockWidth, blockHeight) * 0.2);
         int sampleStartX = startX + innerPadding;
         int sampleStartY = startY + innerPadding;
@@ -258,13 +399,11 @@ public class MainActivity extends AppCompatActivity {
 
         int samplePoints = 0;
 
-        // Sample a few points within the padded area
         for (int y = sampleStartY; y < sampleEndY; y += 5) {
             for (int x = sampleStartX; x < sampleEndX; x += 5) {
                 if (x >= 0 && x < bitmap.getWidth() && y >= 0 && y < bitmap.getHeight()) {
                     int pixel = bitmap.getPixel(x, y);
                     int gray = (Color.red(pixel) + Color.green(pixel) + Color.blue(pixel)) / 3;
-
                     if (gray < 128) {
                         blackCount++;
                     } else {
@@ -274,14 +413,9 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
-
-        // If we somehow didn't sample anything, default to '0'
         if (samplePoints == 0) {
             return '0';
         }
-
-        // Whichever color we have more of determines the block value
         return (blackCount > whiteCount) ? '1' : '0';
     }
-
 }
