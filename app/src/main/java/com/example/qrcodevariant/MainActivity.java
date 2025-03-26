@@ -1,6 +1,7 @@
 package com.example.qrcodevariant;
 
 import android.Manifest;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -13,6 +14,7 @@ import android.graphics.Paint;
 import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.MediaStore;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -28,8 +30,11 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -88,10 +93,18 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
 
+                // Generate the QR code bitmap
                 Bitmap generatedBitmap = generateQRCodeVariant(binaryInput, gridSize);
+
+                // Display in ImageView
                 imageViewCode.setImageBitmap(generatedBitmap);
+
+                // Save to gallery
+                String fileName = "QRCodeVariant_" + System.currentTimeMillis();
+                saveBitmapToGallery(generatedBitmap, fileName);
             }
         });
+
 
         // Handle Capture Code button click (Decoding from Camera)
         buttonCapture.setOnClickListener(new View.OnClickListener() {
@@ -308,6 +321,51 @@ public class MainActivity extends AppCompatActivity {
         img.recycle();
         return rotatedImg;
     }
+
+    private void saveBitmapToGallery(Bitmap bitmap, String fileName) {
+        OutputStream fos;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/QRCodeVariants");
+
+                Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri != null) {
+                    fos = getContentResolver().openOutputStream(uri);
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                    if (fos != null) fos.close();
+                    Toast.makeText(this, "Saved to gallery!", Toast.LENGTH_SHORT).show();
+                }
+            } else {
+                // Legacy method for API < 29
+                String imagesDir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_PICTURES
+                ).toString() + "/QRCodeVariants";
+                File file = new File(imagesDir);
+                if (!file.exists()) file.mkdirs();
+
+                File image = new File(file, fileName + ".png");
+                fos = new FileOutputStream(image);
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                fos.flush();
+                fos.close();
+
+                // Make visible in gallery
+                Intent mediaScanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                Uri contentUri = Uri.fromFile(image);
+                mediaScanIntent.setData(contentUri);
+                this.sendBroadcast(mediaScanIntent);
+
+                Toast.makeText(this, "Saved to gallery!", Toast.LENGTH_SHORT).show();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Failed to save image.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
 
     // Generates the QR code variant bitmap with visible grid lines from the binary string and grid size
     private Bitmap generateQRCodeVariant(String binary, int gridSize) {
